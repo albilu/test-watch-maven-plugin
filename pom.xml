@@ -46,11 +46,11 @@
     </dependency>
 
     <!-- Bytecode analysis -->
-    <dependency>
-      <groupId>org.ow2.asm</groupId>
-      <artifactId>asm</artifactId>
-      <version>9.6</version>
-    </dependency>
+     <dependency>
+       <groupId>org.ow2.asm</groupId>
+       <artifactId>asm</artifactId>
+       <version>9.7.1</version>
+     </dependency>
 
     <!-- Test -->
     <dependency>
@@ -69,11 +69,11 @@
 
   <build>
     <plugins>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-plugin-plugin</artifactId>
-        <version>3.11.0</version>
-      </plugin>
+       <plugin>
+         <groupId>org.apache.maven.plugins</groupId>
+         <artifactId>maven-plugin-plugin</artifactId>
+         <version>3.13.0</version>
+       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>

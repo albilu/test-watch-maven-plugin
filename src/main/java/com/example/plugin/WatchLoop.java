@@ -48,6 +48,7 @@ public class WatchLoop {
         Path classesDir = basedir.resolve("target/classes");
         Path testClassesDir = basedir.resolve("target/test-classes");
         Path sourceRoot = basedir.resolve("src/main/java");
+        Path testSourceRoot = basedir.resolve("src/test/java");
 
         List<String> patterns = Arrays.stream(testPattern.split(","))
             .map(String::trim).filter(s -> !s.isEmpty()).toList();
@@ -113,7 +114,7 @@ public class WatchLoop {
                     continue;
                 }
                 TestSelector.Result selection = TestSelector.select(
-                    event.getChangedFiles(), currentGraph, sourceRoot, testPattern);
+                    event.getChangedFiles(), currentGraph, sourceRoot, testSourceRoot, testPattern);
                 if (selection.isAll()) {
                     toRun = Collections.emptySet();
                 } else {

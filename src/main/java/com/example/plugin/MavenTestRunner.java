@@ -89,7 +89,9 @@ public class MavenTestRunner {
         // Capture process for cancel-and-restart
         request.setOutputHandler(line -> {
             String colored = colorize(line);
-            System.out.println(colored);
+            if (colored != null) {
+                System.out.println(colored);
+            }
         });
         request.setErrorHandler(line -> System.err.println(YELLOW + line + RESET));
 
@@ -100,6 +102,7 @@ public class MavenTestRunner {
             InvocationResult result = invoker.execute(request);
             // After run, parse surefire XML for failures
             lastFailedFqns = parseSurefireFailures();
+            printSummary();
             return result.getExitCode();
         } catch (MavenInvocationException e) {
             System.err.println(RED + "[test-watch] Maven invocation failed: " + e.getMessage() + RESET);
@@ -108,9 +111,13 @@ public class MavenTestRunner {
     }
 
     private String colorize(String line) {
+        // Suppress JaCoCo execution-data mismatch warnings (noise in watch mode)
+        if (line.contains("[WARNING]") && line.contains("Execution data for class") && line.contains("does not match")) {
+            return null; // null signals "suppress this line"
+        }
         if (line.contains("BUILD SUCCESS")) return GREEN + line + RESET;
         if (line.contains("BUILD FAILURE")) return RED + line + RESET;
-        if (line.contains("COMPILATION ERROR") || line.contains("ERROR")) return YELLOW + line + RESET;
+        if (line.contains("COMPILATION ERROR") || line.contains("[ERROR]")) return YELLOW + line + RESET;
         if (line.contains("Tests run:") && line.contains("Failures: 0") && line.contains("Errors: 0"))
             return GREEN + line + RESET;
         if (line.contains("Tests run:") &&
@@ -144,6 +151,75 @@ public class MavenTestRunner {
             LOG.warning("Could not parse surefire reports: " + e.getMessage());
         }
         return failed;
+    }
+
+    /**
+     * Parses all Surefire XML reports and returns [total, failures, errors, skipped].
+     * Returns null if no reports are found.
+     */
+    private int[] parseSurefireSummary() {
+        Path reportsDir = basedir.toPath().resolve("target/surefire-reports");
+        if (!Files.exists(reportsDir)) return null;
+
+        int total = 0, failures = 0, errors = 0, skipped = 0;
+        boolean found = false;
+
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(reportsDir, "TEST-*.xml")) {
+            for (Path xml : stream) {
+                found = true;
+                String content = Files.readString(xml);
+                // Extract attributes from <testsuite tests="N" failures="N" errors="N" skipped="N">
+                total    += extractIntAttr(content, "tests");
+                failures += extractIntAttr(content, "failures");
+                errors   += extractIntAttr(content, "errors");
+                skipped  += extractIntAttr(content, "skipped");
+            }
+        } catch (IOException e) {
+            LOG.warning("Could not parse surefire reports for summary: " + e.getMessage());
+            return null;
+        }
+
+        return found ? new int[]{total, failures, errors, skipped} : null;
+    }
+
+    private int extractIntAttr(String xml, String attrName) {
+        String search = attrName + "=\"";
+        int idx = xml.indexOf(search);
+        if (idx < 0) return 0;
+        int start = idx + search.length();
+        int end = xml.indexOf('"', start);
+        if (end < 0) return 0;
+        try {
+            return Integer.parseInt(xml.substring(start, end).trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private void printSummary() {
+        int[] summary = parseSurefireSummary();
+        if (summary == null) return;
+
+        int total = summary[0], failures = summary[1], errors = summary[2], skipped = summary[3];
+        int passed = total - failures - errors - skipped;
+        boolean hasFail = (failures + errors) > 0;
+
+        StringBuilder sb = new StringBuilder();
+        if (hasFail) {
+            sb.append(RED).append(" FAIL ").append(RESET);
+        } else {
+            sb.append(GREEN).append(" PASS ").append(RESET);
+        }
+        sb.append(" Tests: ");
+        if (hasFail) {
+            sb.append(RED).append(failures + errors).append(" failed").append(RESET).append(", ");
+        }
+        if (skipped > 0) {
+            sb.append(YELLOW).append(skipped).append(" skipped").append(RESET).append(", ");
+        }
+        sb.append(GREEN).append(passed).append(" passed").append(RESET);
+
+        System.out.println("\n" + sb);
     }
 
     private static File detectMavenHome() {

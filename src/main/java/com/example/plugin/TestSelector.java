@@ -2,6 +2,7 @@ package com.example.plugin;
 
 import java.nio.file.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Selects which test classes to run given a set of changed .java file paths
@@ -26,45 +27,50 @@ public class TestSelector {
     }
 
     /**
-     * @param changedFiles   absolute or project-relative paths to changed .java files
-     * @param graph          current dependency graph (may be empty on first run)
-     * @param sourceRoot     path to src/main/java (used to derive FQN from path)
-     * @param testPatterns   comma-separated glob string, used to detect if a changed file
-     *                       is itself a test (in which case it runs directly)
+     * @param changedFiles    absolute or project-relative paths to changed .java files
+     * @param graph           current dependency graph (may be empty on first run)
+     * @param mainSourceRoot  path to src/main/java (used to derive FQN from path)
+     * @param testSourceRoot  path to src/test/java (used to detect and directly run changed test files)
+     * @param testPatterns    comma-separated glob string, used to detect if a changed file
+     *                        is itself a test (in which case it runs directly)
      * @return Result.all() if any changed file is unknown; Result.of(fqns) otherwise
      */
     public static Result select(Set<Path> changedFiles, DependencyGraph graph,
-                                Path sourceRoot, String testPatterns) {
+                                 Path mainSourceRoot, Path testSourceRoot,
+                                 String testPatterns) {
         if (graph.getSourceToTests().isEmpty() && graph.getTestToSources().isEmpty()) {
-            // Empty graph — no compiled classes yet; trigger full suite
             return Result.all();
         }
 
         List<PathMatcher> testMatchers = Arrays.stream(testPatterns.split(","))
             .map(String::trim)
             .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
-            .toList();
+            .collect(Collectors.toList());
 
         Set<String> selected = new LinkedHashSet<>();
         for (Path changed : changedFiles) {
-            String fqn = pathToFqn(changed, sourceRoot);
-
-            // If the changed file is itself a test class, run it directly
             String simpleName = changed.getFileName().toString();
-            String relJava = changed.toString().replace('\\', '/');
             Path simplePath = Path.of(simpleName);
+            String relJava = changed.toString().replace('\\', '/');
             Path relPath = Path.of(relJava);
             boolean isTest = testMatchers.stream()
                 .anyMatch(m -> m.matches(simplePath) || m.matches(relPath));
+
             if (isTest) {
-                // Convert test file path to FQN (lives under src/test/java, use same logic)
+                // Try to derive FQN from test source root first
+                String fqn = pathToFqn(changed, testSourceRoot);
+                // If relativization failed (result has no package separator), try main root
+                if (!fqn.contains(".")) {
+                    fqn = pathToFqn(changed, mainSourceRoot);
+                }
                 selected.add(fqn);
                 continue;
             }
 
+            // Source file: look it up in the graph
+            String fqn = pathToFqn(changed, mainSourceRoot);
             Set<String> tests = graph.getSourceToTests().get(fqn);
             if (tests == null || tests.isEmpty()) {
-                // Changed file has no known test dependents — trigger full suite
                 return Result.all();
             }
             selected.addAll(tests);
