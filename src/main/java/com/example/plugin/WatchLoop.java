@@ -1,24 +1,25 @@
 package com.example.plugin;
 
 import com.example.plugin.model.FileChangeEvent;
+import com.example.plugin.model.TriggerInfo;
 import com.example.plugin.model.WatchEventType;
 import org.apache.maven.project.MavenProject;
 
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.logging.Logger;
 
 /**
- * Core event loop shared by WatchMojo (initialRun=false) and TestMojo (initialRun=true).
+ * Core event loop shared by WatchMojo (initialRun=false) and TestMojo
+ * (initialRun=true).
  */
 public class WatchLoop {
 
     private static final Logger LOG = Logger.getLogger(WatchLoop.class.getName());
     private static final String YELLOW = "\u001B[33m";
-    private static final String CYAN   = "\u001B[36m";
-    private static final String RESET  = "\u001B[0m";
+    private static final String CYAN = "\u001B[36m";
+    private static final String RESET = "\u001B[0m";
 
     private final MavenProject project;
     private final boolean initialRun;
@@ -30,9 +31,9 @@ public class WatchLoop {
     private final long debounceMillis;
 
     public WatchLoop(MavenProject project, boolean initialRun,
-                     boolean smartSelection, boolean parallel,
-                     List<String> includes, List<String> excludes,
-                     String testPattern, long debounceMillis) {
+            boolean smartSelection, boolean parallel,
+            List<String> includes, List<String> excludes,
+            String testPattern, long debounceMillis) {
         this.project = project;
         this.initialRun = initialRun;
         this.smartSelection = smartSelection;
@@ -51,9 +52,26 @@ public class WatchLoop {
         Path testSourceRoot = basedir.resolve("src/test/java");
 
         List<String> patterns = Arrays.stream(testPattern.split(","))
-            .map(String::trim).filter(s -> !s.isEmpty()).toList();
+                .map(String::trim).filter(s -> !s.isEmpty()).toList();
 
         MavenTestRunner runner = new MavenTestRunner(project.getBasedir(), parallel);
+
+        // Set up TUI renderer (JLine)
+        TuiRenderer renderer = new TuiRenderer();
+        TriggerQueue triggerQueue = new TriggerQueue();
+        renderer.setTriggerQueue(triggerQueue);
+        triggerQueue.setOnChange(renderer::refreshBottomPanel);
+
+        try {
+            renderer.setup();
+        } catch (IOException e) {
+            LOG.warning("Could not set up JLine terminal: " + e.getMessage() + " — using plain output");
+        }
+
+        // Route test output through the TUI renderer
+        if (renderer.isActive()) {
+            runner.setOutputSink(renderer::printOutputLine);
+        }
 
         // Build initial graph (may be empty if target/ dirs don't exist yet)
         DependencyGraph graph = buildGraph(classesDir, testClassesDir, patterns);
@@ -61,6 +79,9 @@ public class WatchLoop {
         // If initialRun=true, run the full suite before watching
         if (initialRun) {
             runner.runAll();
+            int[] summary = runner.parseSurefireSummary();
+            if (summary != null)
+                renderer.updateSummary(summary);
             graph = buildGraph(classesDir, testClassesDir, patterns);
         }
 
@@ -69,7 +90,11 @@ public class WatchLoop {
         if (ciMax != null) {
             int secs = Integer.parseInt(ciMax.trim());
             Thread exitThread = new Thread(() -> {
-                try { Thread.sleep(secs * 1000L); } catch (InterruptedException ignored) {}
+                try {
+                    Thread.sleep(secs * 1000L);
+                } catch (InterruptedException ignored) {
+                }
+                renderer.cleanup();
                 System.exit(0);
             }, "ci-exit");
             exitThread.setDaemon(true);
@@ -77,14 +102,13 @@ public class WatchLoop {
         }
 
         // Start file watcher
-        BlockingQueue<FileChangeEvent> queue = new LinkedBlockingQueue<>();
         List<Path> watchRoots = List.of(basedir.resolve("src"));
         FileWatcherService watcher = new FileWatcherService(
-            watchRoots, includes, excludes, queue, debounceMillis);
+                watchRoots, includes, excludes, triggerQueue, debounceMillis);
         watcher.start();
 
-        // Start TUI
-        TuiController tui = new TuiController(queue);
+        // Start TUI keyboard controller
+        TuiController tui = new TuiController(triggerQueue, renderer);
         tui.start();
 
         // Event loop
@@ -92,29 +116,42 @@ public class WatchLoop {
         MavenTestRunner currentRunner = runner;
 
         while (true) {
-            FileChangeEvent event = queue.take(); // blocks
+            TriggerInfo trigger = triggerQueue.takeNext(); // blocks, marks RUNNING
 
             // Cancel any in-progress run
             currentRunner.cancel();
 
+            FileChangeEvent event = trigger.getEvent();
             Set<String> toRun;
             if (event.getType() == WatchEventType.ALL || !smartSelection) {
                 toRun = Collections.emptySet(); // empty = run all
             } else if (event.getType() == WatchEventType.FAILED) {
                 toRun = currentRunner.getLastFailedFqns();
                 if (toRun.isEmpty()) {
-                    System.out.println(YELLOW + "[test-watch] No failed tests recorded — running all." + RESET);
+                    if (renderer.isActive()) {
+                        renderer.printOutputLine(
+                                YELLOW + "[test-watch] No failed tests recorded — running all." + RESET);
+                    } else {
+                        System.out.println(YELLOW + "[test-watch] No failed tests recorded — running all." + RESET);
+                    }
                 }
             } else {
                 // CHANGED
                 if (currentGraph.getSourceToTests().isEmpty() && currentGraph.getTestToSources().isEmpty()) {
-                    System.out.println(YELLOW +
-                        "[test-watch] No compiled classes found. " +
-                        "Run 'mvn compile test-compile' first, or use 'test-watch:test'." + RESET);
+                    if (renderer.isActive()) {
+                        renderer.printOutputLine(YELLOW +
+                                "[test-watch] No compiled classes found. " +
+                                "Run 'mvn compile test-compile' first, or use 'test-watch:test'." + RESET);
+                    } else {
+                        System.out.println(YELLOW +
+                                "[test-watch] No compiled classes found. " +
+                                "Run 'mvn compile test-compile' first, or use 'test-watch:test'." + RESET);
+                    }
+                    triggerQueue.markDone(trigger.getId());
                     continue;
                 }
                 TestSelector.Result selection = TestSelector.select(
-                    event.getChangedFiles(), currentGraph, sourceRoot, testSourceRoot, testPattern);
+                        event.getChangedFiles(), currentGraph, sourceRoot, testSourceRoot, testPattern);
                 if (selection.isAll()) {
                     toRun = Collections.emptySet();
                 } else {
@@ -128,18 +165,22 @@ public class WatchLoop {
                 currentRunner.run(toRun);
             }
 
+            // Update summary from Surefire reports
+            int[] summary = currentRunner.parseSurefireSummary();
+            if (summary != null) {
+                renderer.updateSummary(summary);
+            }
+
+            // Mark trigger done
+            triggerQueue.markDone(trigger.getId());
+
             // Rebuild graph after each run
             currentGraph = buildGraph(classesDir, testClassesDir, patterns);
-
-            // Reprint the help line so the user knows we're still watching
-            System.out.println(CYAN +
-                "\n[test-watch] Watching for changes." +
-                "  [r] rerun all  [f] rerun failed  [q] quit" + RESET);
         }
     }
 
     private DependencyGraph buildGraph(Path classesDir, Path testClassesDir,
-                                        List<String> patterns) {
+            List<String> patterns) {
         try {
             return DependencyGraph.build(classesDir, testClassesDir, patterns);
         } catch (IOException e) {

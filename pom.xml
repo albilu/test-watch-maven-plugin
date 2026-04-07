@@ -52,6 +52,13 @@
        <version>9.7.1</version>
      </dependency>
 
+    <!-- Terminal UI (JLine) -->
+    <dependency>
+      <groupId>org.jline</groupId>
+      <artifactId>jline</artifactId>
+      <version>3.26.3</version>
+    </dependency>
+
     <!-- Test -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>

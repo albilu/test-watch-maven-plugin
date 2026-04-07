@@ -1,6 +1,7 @@
 package com.example.plugin;
 
 import com.example.plugin.model.FileChangeEvent;
+import com.example.plugin.model.TriggerInfo;
 import com.example.plugin.model.WatchEventType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -18,11 +19,17 @@ class FileWatcherServiceTest {
 
     @Test
     void fileChange_postsEventWithinDebounceWindow() throws Exception {
-        LinkedBlockingQueue<FileChangeEvent> queue = new LinkedBlockingQueue<>();
-        // Use a short debounce (50ms) to keep tests fast
+        TriggerQueue triggerQueue = new TriggerQueue();
+        // Use a blocking queue to observe triggers as they arrive
+        BlockingQueue<TriggerInfo> received = new LinkedBlockingQueue<>();
+        triggerQueue.setOnChange(() -> {
+            for (TriggerInfo t : triggerQueue.getVisibleTriggers()) {
+                received.offer(t);
+            }
+        });
+
         FileWatcherService svc = new FileWatcherService(
-            List.of(watchDir), List.of("**/*.java"), List.of(), queue, 50
-        );
+                List.of(watchDir), List.of("**/*.java"), List.of(), triggerQueue, 50);
         svc.start();
 
         // Give watcher time to register before creating the file
@@ -32,22 +39,29 @@ class FileWatcherServiceTest {
         Path javaFile = watchDir.resolve("Foo.java");
         Files.writeString(javaFile, "class Foo {}");
 
-        // Should receive event within 2 seconds
-        FileChangeEvent event = queue.poll(2, TimeUnit.SECONDS);
-        assertNotNull(event, "Expected a FileChangeEvent but none arrived");
+        // Should receive trigger within 2 seconds
+        TriggerInfo trigger = received.poll(2, TimeUnit.SECONDS);
+        assertNotNull(trigger, "Expected a TriggerInfo but none arrived");
+        FileChangeEvent event = trigger.getEvent();
         assertEquals(WatchEventType.CHANGED, event.getType());
         assertTrue(event.getChangedFiles().stream()
-            .anyMatch(p -> p.getFileName().toString().equals("Foo.java")));
+                .anyMatch(p -> p.getFileName().toString().equals("Foo.java")));
 
         svc.interrupt();
     }
 
     @Test
     void excludedFile_doesNotPostEvent() throws Exception {
-        LinkedBlockingQueue<FileChangeEvent> queue = new LinkedBlockingQueue<>();
+        TriggerQueue triggerQueue = new TriggerQueue();
+        BlockingQueue<TriggerInfo> received = new LinkedBlockingQueue<>();
+        triggerQueue.setOnChange(() -> {
+            for (TriggerInfo t : triggerQueue.getVisibleTriggers()) {
+                received.offer(t);
+            }
+        });
+
         FileWatcherService svc = new FileWatcherService(
-            List.of(watchDir), List.of("**/*.java"), List.of("**/excluded/**"), queue, 50
-        );
+                List.of(watchDir), List.of("**/*.java"), List.of("**/excluded/**"), triggerQueue, 50);
         svc.start();
 
         // Create excluded directory and file
@@ -56,8 +70,8 @@ class FileWatcherServiceTest {
         Files.writeString(excluded.resolve("Ignored.java"), "class Ignored {}");
 
         // Wait; no event should arrive
-        FileChangeEvent event = queue.poll(400, TimeUnit.MILLISECONDS);
-        assertNull(event, "Excluded file should not produce an event");
+        TriggerInfo trigger = received.poll(400, TimeUnit.MILLISECONDS);
+        assertNull(trigger, "Excluded file should not produce an event");
 
         svc.interrupt();
     }

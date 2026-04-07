@@ -21,29 +21,31 @@ public class FileWatcherService extends Thread {
     private final List<Path> watchRoots;
     private final List<PathMatcher> includeMatchers;
     private final List<PathMatcher> excludeMatchers;
-    private final BlockingQueue<FileChangeEvent> queue;
+    private final TriggerQueue triggerQueue;
     private final long debounceMillis;
 
     /**
-     * @param watchRoots      directories to watch recursively
-     * @param includes        glob patterns for files to include (e.g. **&#47;*.java)
-     * @param excludes        glob patterns for files to exclude (e.g. "**&#47;target&#47;**")
-     * @param queue           shared event queue
-     * @param debounceMillis  window to accumulate changes before posting (default 100)
+     * @param watchRoots     directories to watch recursively
+     * @param includes       glob patterns for files to include (e.g. **&#47;*.java)
+     * @param excludes       glob patterns for files to exclude (e.g.
+     *                       "**&#47;target&#47;**")
+     * @param triggerQueue   shared trigger queue
+     * @param debounceMillis window to accumulate changes before posting (default
+     *                       100)
      */
     public FileWatcherService(List<Path> watchRoots, List<String> includes,
-                               List<String> excludes, BlockingQueue<FileChangeEvent> queue,
-                               long debounceMillis) {
+            List<String> excludes, TriggerQueue triggerQueue,
+            long debounceMillis) {
         super("file-watcher");
         setDaemon(true);
         this.watchRoots = watchRoots;
         this.includeMatchers = includes.stream()
-            .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
-            .toList();
+                .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
+                .toList();
         this.excludeMatchers = excludes.stream()
-            .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
-            .toList();
-        this.queue = queue;
+                .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
+                .toList();
+        this.triggerQueue = triggerQueue;
         this.debounceMillis = debounceMillis;
     }
 
@@ -67,7 +69,7 @@ public class FileWatcherService extends Thread {
                         WatchEvent.Kind<?> kind = event.kind();
 
                         if (kind == StandardWatchEventKinds.OVERFLOW) {
-                            queue.offer(new FileChangeEvent(WatchEventType.ALL));
+                            triggerQueue.enqueue(new FileChangeEvent(WatchEventType.ALL));
                             pending.clear();
                             lastChange = -1;
                             key.reset();
@@ -95,7 +97,7 @@ public class FileWatcherService extends Thread {
 
                 // Flush debounce buffer if window has elapsed
                 if (!pending.isEmpty() && System.currentTimeMillis() - lastChange >= debounceMillis) {
-                    queue.offer(new FileChangeEvent(WatchEventType.CHANGED, new LinkedHashSet<>(pending)));
+                    triggerQueue.enqueue(new FileChangeEvent(WatchEventType.CHANGED, new LinkedHashSet<>(pending)));
                     pending.clear();
                 }
             }
@@ -110,12 +112,13 @@ public class FileWatcherService extends Thread {
         // Convert to a relative-looking path for glob matching
         Path matchPath = path;
         boolean included = includeMatchers.isEmpty()
-            || includeMatchers.stream().anyMatch(m -> m.matches(matchPath)
-                || m.matches(matchPath.getFileName()));
+                || includeMatchers.stream().anyMatch(m -> m.matches(matchPath)
+                        || m.matches(matchPath.getFileName()));
         boolean excluded = excludeMatchers.stream().anyMatch(m -> {
             // Check each path segment combination for exclude globs like **/target/**
             for (int i = 0; i <= matchPath.getNameCount(); i++) {
-                if (i < matchPath.getNameCount() && m.matches(matchPath.subpath(0, i + 1))) return true;
+                if (i < matchPath.getNameCount() && m.matches(matchPath.subpath(0, i + 1)))
+                    return true;
             }
             return m.matches(matchPath) || m.matches(matchPath.getFileName());
         });
@@ -123,15 +126,16 @@ public class FileWatcherService extends Thread {
     }
 
     private void registerAll(Path root, WatchService ws) throws IOException {
-        if (!Files.exists(root)) return;
+        if (!Files.exists(root))
+            return;
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
                     throws IOException {
                 dir.register(ws,
-                    StandardWatchEventKinds.ENTRY_CREATE,
-                    StandardWatchEventKinds.ENTRY_MODIFY,
-                    StandardWatchEventKinds.ENTRY_DELETE);
+                        StandardWatchEventKinds.ENTRY_CREATE,
+                        StandardWatchEventKinds.ENTRY_MODIFY,
+                        StandardWatchEventKinds.ENTRY_DELETE);
                 return FileVisitResult.CONTINUE;
             }
         });
