@@ -2,7 +2,7 @@ package org.testwatch.plugin;
 
 import org.testwatch.plugin.model.FileChangeEvent;
 import org.testwatch.plugin.model.TriggerInfo;
-import org.testwatch.plugin.model.WatchEventType;;
+import org.testwatch.plugin.model.WatchEventType;
 import org.testwatch.plugin.model.TriggerInfo;
 import org.testwatch.plugin.model.WatchEventType;
 import org.junit.jupiter.api.Test;

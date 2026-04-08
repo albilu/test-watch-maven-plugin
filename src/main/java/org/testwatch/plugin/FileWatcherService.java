@@ -1,11 +1,23 @@
 package org.testwatch.plugin;
 
 import java.io.IOException;
-import java.nio.file.*;
+import java.nio.file.FileSystems;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.PathMatcher;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchEvent;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 import org.testwatch.plugin.model.FileChangeEvent;
 import org.testwatch.plugin.model.WatchEventType;
@@ -41,10 +53,10 @@ public class FileWatcherService extends Thread {
         this.watchRoots = watchRoots;
         this.includeMatchers = includes.stream()
                 .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
-                .toList();
+                .collect(Collectors.toList());
         this.excludeMatchers = excludes.stream()
                 .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
-                .toList();
+                .collect(Collectors.toList());
         this.triggerQueue = triggerQueue;
         this.debounceMillis = debounceMillis;
     }

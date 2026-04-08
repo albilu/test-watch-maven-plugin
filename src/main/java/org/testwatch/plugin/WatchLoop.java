@@ -1,14 +1,18 @@
 package org.testwatch.plugin;
 
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.logging.Logger;
+import java.util.stream.Collectors;
+
 import org.apache.maven.project.MavenProject;
 import org.testwatch.plugin.model.FileChangeEvent;
 import org.testwatch.plugin.model.TriggerInfo;
 import org.testwatch.plugin.model.WatchEventType;
-
-import java.io.IOException;
-import java.nio.file.*;
-import java.util.*;
-import java.util.logging.Logger;
 
 /**
  * Core event loop shared by WatchMojo (initialRun=false) and TestMojo
@@ -52,7 +56,7 @@ public class WatchLoop {
         Path testSourceRoot = basedir.resolve("src/test/java");
 
         List<String> patterns = Arrays.stream(testPattern.split(","))
-                .map(String::trim).filter(s -> !s.isEmpty()).toList();
+                .map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
 
         MavenTestRunner runner = new MavenTestRunner(project.getBasedir(), parallel);
 
