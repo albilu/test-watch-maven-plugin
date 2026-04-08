@@ -2,7 +2,7 @@
 <project>
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>com.example.it</groupId>
+    <groupId>io.github.albilu.it</groupId>
     <artifactId>multi-module-parent</artifactId>
     <version>1.0-SNAPSHOT</version>
   </parent>

@@ -69,7 +69,7 @@ If existing solutions don't fully meet your needs, here's a comprehensive plan f
 
 ```xml
 <plugin>
-    <groupId>com.example</groupId>
+    <groupId>io.github.albilu</groupId>
     <artifactId>test-watch-plugin</artifactId>
     <version>1.0.0</version>
     <configuration>
