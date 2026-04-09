@@ -140,7 +140,7 @@ public class FileWatcherService extends Thread {
     private void registerAll(Path root, WatchService ws) throws IOException {
         if (!Files.exists(root))
             return;
-        Files.walkFileTree(root, new SimpleFileVisitor<>() {
+        Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
                     throws IOException {

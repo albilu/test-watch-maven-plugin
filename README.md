@@ -1,6 +1,6 @@
-# test-watch
+# test-watch-maven-plugin
 
-Lightweight `Vitest watch mode inspired` Maven plugin for watching, running, and summarizing test results during development.
+Lightweight `Vitest` watch mode inspired Maven plugin for watching, running, and summarizing test results during development.
 
 ## Features
 
@@ -10,8 +10,7 @@ Lightweight `Vitest watch mode inspired` Maven plugin for watching, running, and
 
 ## Requirements
 
-- Java JDK 11+
-- Apache Maven 3.6+
+- Java JDK 8+
 
 ## Usage
 
@@ -21,7 +20,7 @@ The plugin is published under the `io.github.albilu` groupId in this repository'
 <repositories>
     <repository>
         <id>github</id>
-        <url>https://maven.pkg.github.com/albilu/test-watch</url>
+        <url>https://maven.pkg.github.com/albilu/test-watch-maven-plugin</url>
         <snapshots>
             <enabled>true</enabled>
         </snapshots>

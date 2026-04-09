@@ -1,16 +1,18 @@
 package org.testwatch.plugin;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.testwatch.plugin.DependencyGraph;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
-import java.nio.file.*;
-import java.util.Arrays;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class DependencyGraphTest {
 
@@ -57,7 +59,7 @@ class DependencyGraphTest {
         Path dest = targetDir.resolve(relativePath);
         Files.createDirectories(dest.getParent());
         // The fixture .class files are compiled alongside tests; locate via classloader
-        try (var in = getClass().getClassLoader().getResourceAsStream(relativePath)) {
+        try (java.io.InputStream in = getClass().getClassLoader().getResourceAsStream(relativePath)) {
             assertNotNull(in, "Fixture class not found on classpath: " + relativePath);
             Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING);
         }

@@ -116,7 +116,7 @@ public class DependencyGraph {
         Set<String> fqns = new LinkedHashSet<>();
         if (!Files.exists(dir))
             return fqns;
-        Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+        Files.walkFileTree(dir, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                 if (file.toString().endsWith(".class")) {
@@ -135,7 +135,7 @@ public class DependencyGraph {
         List<PathMatcher> matchers = patterns.stream()
                 .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
                 .collect(Collectors.toList());
-        Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+        Files.walkFileTree(dir, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                 if (!file.toString().endsWith(".class"))
