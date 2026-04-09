@@ -10,7 +10,7 @@ Lightweight `Vitest` watch mode inspired Maven plugin for watching, running, and
 
 ## Requirements
 
-- Java JDK 8+
+- Java JDK 11+
 
 ## Usage
 
