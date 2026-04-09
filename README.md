@@ -1,5 +1,7 @@
 # test-watch-maven-plugin
 
+[![Builds](https://github.com/albilu/test-watch-maven-plugin/actions/workflows/maven.yml/badge.svg?branch=master)](https://github.com/albilu/test-watch-maven-plugin/actions/workflows/maven.yml)
+
 Lightweight `Vitest` watch mode inspired Maven plugin for watching, running, and summarizing test results during development.
 
 ## Features
@@ -34,7 +36,7 @@ The plugin is published under the `io.github.albilu` groupId in this repository'
         <plugin>
             <groupId>io.github.albilu</groupId>
             <artifactId>test-watch-maven-plugin</artifactId>
-            <version>1.0.0</version>
+            <version>1.0-SNAPSHOT</version>
             <configuration>
                 <includes>
                     <include>**/*.java</include>
