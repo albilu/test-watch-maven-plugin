@@ -17,6 +17,14 @@
     <maven.version>3.9.6</maven.version>
   </properties>
 
+  <distributionManagement>
+    <repository>
+      <id>github</id>
+      <name>GitHub Packages</name>
+      <url>https://maven.pkg.github.com/albilu/test-watch-maven-plugin</url>
+    </repository>
+  </distributionManagement>
+
   <dependencies>
     <!-- Maven Plugin API -->
     <dependency>
