@@ -66,6 +66,6 @@ public class TriggerInfo {
 
     @Override
     public String toString() {
-        return "Trigger " + id + ": " + description + " (" + status.name().toLowerCase() + ")";
+        return "#" + id + ": " + description + " (" + status.name().toLowerCase() + ")";
     }
 }
