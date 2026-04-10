@@ -4,6 +4,8 @@
 
 Lightweight `Vitest` watch mode inspired Maven plugin for watching, running, and summarizing test results during development.
 
+![screenshot](images/image.png)
+
 ## Features
 
 - Watch test sources and re-run tests based on changes.
