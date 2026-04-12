@@ -18,19 +18,7 @@ Lightweight `Vitest` watch mode inspired Maven plugin for watching, running, and
 
 ## Usage
 
-The plugin is published under the `io.github.albilu` groupId in this repository's build metadata. To use it in your project's `pom.xml`, register the GitHub Packages repository and add a plugin entry like this:
-
-```xml
-<repositories>
-    <repository>
-        <id>github</id>
-        <url>https://maven.pkg.github.com/albilu/test-watch-maven-plugin</url>
-        <snapshots>
-            <enabled>true</enabled>
-        </snapshots>
-    </repository>
-</repositories>
-```
+The plugin is available on Maven Central. To use it in your project's `pom.xml`, add a plugin entry like this:
 
 ```xml
 <build>
@@ -38,7 +26,7 @@ The plugin is published under the `io.github.albilu` groupId in this repository'
         <plugin>
             <groupId>io.github.albilu</groupId>
             <artifactId>test-watch-maven-plugin</artifactId>
-            <version>1.0-SNAPSHOT</version>
+            <version>1.0.0</version>
             <configuration>
                 <includes>
                     <include>**/*.java</include>

@@ -7,8 +7,35 @@
 
   <groupId>io.github.albilu</groupId>
   <artifactId>test-watch-maven-plugin</artifactId>
-  <version>1.0-SNAPSHOT</version>
+  <version>1.0.0</version>
   <packaging>maven-plugin</packaging>
+
+  <name>test-watch-maven-plugin</name>
+  <description>Lightweight Vitest watch mode inspired Maven plugin for watching, running, and summarizing test results during development.</description>
+  <url>https://github.com/albilu/test-watch-maven-plugin</url>
+
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <id>albilu</id>
+      <name>albilu</name>
+      <url>https://github.com/albilu</url>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:git://github.com/albilu/test-watch-maven-plugin.git</connection>
+    <developerConnection>scm:git:ssh://github.com/albilu/test-watch-maven-plugin.git</developerConnection>
+    <url>https://github.com/albilu/test-watch-maven-plugin/tree/master</url>
+    <tag>v1.0.0</tag>
+  </scm>
 
   <properties>
     <maven.compiler.source>11</maven.compiler.source>
@@ -17,13 +44,6 @@
     <maven.version>3.9.6</maven.version>
   </properties>
 
-  <distributionManagement>
-    <repository>
-      <id>github</id>
-      <name>GitHub Packages</name>
-      <url>https://maven.pkg.github.com/albilu/test-watch-maven-plugin</url>
-    </repository>
-  </distributionManagement>
 
   <dependencies>
     <!-- Maven Plugin API -->
@@ -123,4 +143,72 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <!-- Publish to Maven Central via new portal -->
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.6.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>true</autoPublish>
+              <waitUntil>published</waitUntil>
+            </configuration>
+          </plugin>
+          <!-- GPG signing of all artifacts -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.4</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals><goal>sign</goal></goals>
+                <configuration>
+                  <passphraseEnvName>MAVEN_GPG_PASSPHRASE</passphraseEnvName>
+                  <gpgArguments>
+                    <arg>--pinentry-mode</arg>
+                    <arg>loopback</arg>
+                    <arg>--trust-model</arg>
+                    <arg>always</arg>
+                  </gpgArguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <!-- Sources JAR (required by Central) -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>3.3.1</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals><goal>jar-no-fork</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+          <!-- Javadoc JAR (required by Central) -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>3.6.3</version>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals><goal>jar</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
