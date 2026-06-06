@@ -1,24 +1,46 @@
 # test-watch-maven-plugin
 
 [![Builds](https://github.com/albilu/test-watch-maven-plugin/actions/workflows/maven.yml/badge.svg?branch=master)](https://github.com/albilu/test-watch-maven-plugin/actions/workflows/maven.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.albilu/test-watch-maven-plugin)](https://central.sonatype.com/artifact/io.github.albilu/test-watch-maven-plugin)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Java](https://img.shields.io/badge/java-11%2B-orange)]()
 
-Lightweight `Vitest` watch mode inspired Maven plugin for watching, running, and summarizing test results during development.
+**Vitest-inspired watch mode for Maven tests. Save a file, see your test results instantly — no IDE required.**
 
 ![screenshot](images/image_.png)
 
+---
+
+## Why?
+
+You're working on a Java project. You change a class. Now you need to know if the tests still pass.
+
+Your options:
+- **`mvn test`** — slow, runs everything, 30+ seconds of waiting
+- **Infinitest** — great, but IDE-specific (Eclipse/IntelliJ only), and doesn't work for everyone's setup
+- **Switch to Gradle** just for `--continuous`? Overkill.
+
+**test-watch-maven-plugin** gives you the same instant feedback loop you get with Vitest, Jest, or `cargo watch` — but for Maven. Save a `.java` file, and only the affected tests run. In parallel. With readable output.
+
+---
+
 ## Features
 
-- Watch test sources and re-run tests based on changes.
-- Produce readable summaries of test results.
-- Designed for integration with Maven builds and invoker-based integration tests.
+- 👀 **File watching** — monitors your source tree for changes
+- 🎯 **Smart test selection** — only re-runs tests affected by changed files (configurable patterns)
+- ⚡ **Parallel execution** — runs tests concurrently for faster feedback
+- 📊 **Readable summaries** — clean pass/fail output, not Maven's wall of text
+- 🔌 **Maven-native** — no extra daemon, no IDE plugin, just `mvn`
+- 🧩 **Configurable** — include/exclude patterns, test matching, parallel toggle, smart selection toggle
 
 ## Requirements
 
 - Java JDK 11+
+- Maven 3.6+
 
-## Usage
+## Quick Start
 
-The plugin is available on Maven Central. To use it in your project's `pom.xml`, add a plugin entry like this:
+Add the plugin to your `pom.xml`:
 
 ```xml
 <build>
@@ -33,7 +55,6 @@ The plugin is available on Maven Central. To use it in your project's `pom.xml`,
                 </includes>
                 <excludes>
                     <exclude>**/target/**</exclude>
-                    <exclude>**/*Test.java</exclude>
                 </excludes>
                 <testPattern>**/*Test.java</testPattern>
                 <parallel>true</parallel>
@@ -44,10 +65,47 @@ The plugin is available on Maven Central. To use it in your project's `pom.xml`,
 </build>
 ```
 
+Then run:
+
 ```bash
 mvn test-watch-maven-plugin:test
 ```
 
+The plugin watches your source files. Change anything, save, and tests re-run automatically.
+
+## Configuration
+
+| Option | Default | Description |
+|---|---|---|
+| `includes` | `**/*.java` | Files to watch for changes |
+| `excludes` | — | Patterns to ignore (e.g., `**/target/**`) |
+| `testPattern` | `**/*Test.java` | Pattern to identify test files |
+| `parallel` | `true` | Run tests in parallel |
+| `smartSelection` | `true` | Only run tests affected by changed files |
+
+## How It Works
+
+1. Plugin starts a file watcher on your configured source paths
+2. When a `.java` file changes, the plugin identifies which test files to run using `testPattern`
+3. With `smartSelection: true`, only tests matching changed source files are executed
+4. Tests are dispatched to Maven's invoker framework (parallel when enabled)
+5. Results are aggregated into a clean summary
+
+## vs Alternatives
+
+| | test-watch-maven-plugin | Infinitest | `mvn test -pl ...` | Gradle `--continuous` |
+|---|---|---|---|---|
+| Watch mode | ✅ | ✅ | ❌ | ✅ |
+| Maven-native | ✅ | ❌ (IDE plugin) | ✅ | ❌ |
+| IDE-agnostic | ✅ | ❌ | ✅ | ✅ |
+| Smart selection | ✅ | ✅ | ❌ | ❌ |
+| Parallel tests | ✅ | ❌ | ✅ | ✅ |
+| CLI-first | ✅ | ❌ | ✅ | ✅ |
+
 ## Contributing
 
 Contributions welcome. Please open issues or PRs against this repository. Follow existing code style and include tests for new behavior.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
