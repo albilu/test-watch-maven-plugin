@@ -48,7 +48,7 @@ Add the plugin to your `pom.xml`:
         <plugin>
             <groupId>io.github.albilu</groupId>
             <artifactId>test-watch-maven-plugin</artifactId>
-            <version>1.0.0</version>
+            <version>1.1.0</version>
             <configuration>
                 <includes>
                     <include>**/*.java</include>

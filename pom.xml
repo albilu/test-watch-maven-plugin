@@ -7,7 +7,7 @@
 
   <groupId>io.github.albilu</groupId>
   <artifactId>test-watch-maven-plugin</artifactId>
-  <version>1.0.0</version>
+  <version>1.1.0</version>
   <packaging>maven-plugin</packaging>
 
   <name>test-watch-maven-plugin</name>
@@ -34,7 +34,7 @@
     <connection>scm:git:git://github.com/albilu/test-watch-maven-plugin.git</connection>
     <developerConnection>scm:git:ssh://github.com/albilu/test-watch-maven-plugin.git</developerConnection>
     <url>https://github.com/albilu/test-watch-maven-plugin/tree/master</url>
-    <tag>v1.0.0</tag>
+    <tag>1.1.0</tag>
   </scm>
 
   <properties>
