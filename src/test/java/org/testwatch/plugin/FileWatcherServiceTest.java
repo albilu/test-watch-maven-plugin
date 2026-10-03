@@ -3,8 +3,6 @@ package org.testwatch.plugin;
 import org.testwatch.plugin.model.FileChangeEvent;
 import org.testwatch.plugin.model.TriggerInfo;
 import org.testwatch.plugin.model.WatchEventType;
-import org.testwatch.plugin.model.TriggerInfo;
-import org.testwatch.plugin.model.WatchEventType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.testwatch.plugin.FileWatcherService;
@@ -35,9 +33,7 @@ class FileWatcherServiceTest {
         FileWatcherService svc = new FileWatcherService(
                 List.of(watchDir), List.of("**/*.java"), List.of(), triggerQueue, 50);
         svc.start();
-
-        // Give watcher time to register before creating the file
-        Thread.sleep(200);
+        svc.awaitReady();
 
         // Create a .java file in the watched dir
         Path javaFile = watchDir.resolve("Foo.java");
@@ -51,7 +47,8 @@ class FileWatcherServiceTest {
         assertTrue(event.getChangedFiles().stream()
                 .anyMatch(p -> p.getFileName().toString().equals("Foo.java")));
 
-        svc.interrupt();
+        svc.shutdown();
+        svc.join(1000);
     }
 
     @Test
@@ -67,6 +64,7 @@ class FileWatcherServiceTest {
         FileWatcherService svc = new FileWatcherService(
                 List.of(watchDir), List.of("**/*.java"), List.of("**/excluded/**"), triggerQueue, 50);
         svc.start();
+        svc.awaitReady();
 
         // Create excluded directory and file
         Path excluded = watchDir.resolve("excluded");
@@ -77,6 +75,7 @@ class FileWatcherServiceTest {
         TriggerInfo trigger = received.poll(400, TimeUnit.MILLISECONDS);
         assertNull(trigger, "Excluded file should not produce an event");
 
-        svc.interrupt();
+        svc.shutdown();
+        svc.join(1000);
     }
 }

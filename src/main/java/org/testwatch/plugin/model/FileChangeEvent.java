@@ -1,7 +1,6 @@
 package org.testwatch.plugin.model;
 
 import java.nio.file.Path;
-import java.util.Collections;
 import java.util.Set;
 
 /**
@@ -19,12 +18,12 @@ public class FileChangeEvent {
 
     public FileChangeEvent(WatchEventType type, Set<Path> changedFiles) {
         this.type = type;
-        this.changedFiles = Collections.unmodifiableSet(changedFiles);
+        this.changedFiles = Set.copyOf(changedFiles);
     }
 
     /** Convenience constructor for sentinel events (ALL, FAILED). */
     public FileChangeEvent(WatchEventType type) {
-        this(type, Collections.emptySet());
+        this(type, Set.of());
     }
 
     public WatchEventType getType() {

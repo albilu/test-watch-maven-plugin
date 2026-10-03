@@ -1,117 +1,67 @@
 package org.testwatch.plugin;
 
-import java.nio.file.*;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
-/**
- * Selects which test classes to run given a set of changed .java file paths
- * and the current DependencyGraph.
- */
+/** Selects tests conservatively; unknown source dependencies always run the full suite. */
 public class TestSelector {
-
     public static final class Result {
         private final boolean all;
         private final Set<String> testFqns;
-
-        private Result(boolean all, Set<String> testFqns) {
+        private Result(boolean all, Set<String> tests) {
             this.all = all;
-            this.testFqns = Collections.unmodifiableSet(testFqns);
+            this.testFqns = Collections.unmodifiableSet(new LinkedHashSet<>(tests));
         }
-
-        public boolean isAll() {
-            return all;
-        }
-
-        public Set<String> getTestFqns() {
-            return testFqns;
-        }
-
-        public static Result all() {
-            return new Result(true, Collections.emptySet());
-        }
-
-        public static Result of(Set<String> fqns) {
-            return new Result(false, fqns);
-        }
+        public boolean isAll() { return all; }
+        public Set<String> getTestFqns() { return testFqns; }
+        public static Result all() { return new Result(true, Set.of()); }
+        public static Result of(Set<String> tests) { return new Result(false, tests); }
     }
 
-    /**
-     * @param changedFiles   absolute or project-relative paths to changed .java
-     *                       files
-     * @param graph          current dependency graph (may be empty on first run)
-     * @param mainSourceRoot path to src/main/java (used to derive FQN from path)
-     * @param testSourceRoot path to src/test/java (used to detect and directly run
-     *                       changed test files)
-     * @param testPatterns   comma-separated glob string, used to detect if a
-     *                       changed file
-     *                       is itself a test (in which case it runs directly)
-     * @return Result.all() if any changed file is unknown; Result.of(fqns)
-     *         otherwise
-     */
-    public static Result select(Set<Path> changedFiles, DependencyGraph graph,
-            Path mainSourceRoot, Path testSourceRoot,
-            String testPatterns) {
-        if (graph.getSourceToTests().isEmpty() && graph.getTestToSources().isEmpty()) {
-            return Result.all();
-        }
+    public static Result select(Set<Path> changes, DependencyGraph graph, Path sourceRoot,
+            Path testRoot, String patterns) {
+        return select(changes, graph, List.of(sourceRoot), List.of(testRoot), patterns);
+    }
 
-        List<PathMatcher> testMatchers = Arrays.stream(testPatterns.split(","))
-                .map(String::trim)
-                .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
-                .collect(Collectors.toList());
-
+    static Result select(Set<Path> changes, DependencyGraph graph, List<Path> sourceRoots,
+            List<Path> testRoots, String patterns) {
+        PathPatterns tests = new PathPatterns(Arrays.asList(patterns.split(",")));
         Set<String> selected = new LinkedHashSet<>();
-        for (Path changed : changedFiles) {
-            String simpleName = changed.getFileName().toString();
-            Path simplePath = Path.of(simpleName);
-            String relJava = changed.toString().replace('\\', '/');
-            Path relPath = Path.of(relJava);
-            boolean isTest = testMatchers.stream()
-                    .anyMatch(m -> m.matches(simplePath) || m.matches(relPath));
-
-            if (isTest) {
-                // Try to derive FQN from test source root first
-                String fqn = pathToFqn(changed, testSourceRoot);
-                // If relativization failed (result has no package separator), try main root
-                if (!fqn.contains(".")) {
-                    fqn = pathToFqn(changed, mainSourceRoot);
-                }
-                selected.add(fqn);
+        for (Path change : changes) {
+            Path path = change.toAbsolutePath().normalize();
+            Path testRoot = containing(path, testRoots);
+            if (testRoot != null && tests.matches(testRoot.relativize(path))) {
+                selected.add(pathToFqn(path, testRoot));
                 continue;
             }
-
-            // Source file: look it up in the graph
-            String fqn = pathToFqn(changed, mainSourceRoot);
-            Set<String> tests = graph.getSourceToTests().get(fqn);
-            if (tests == null || tests.isEmpty()) {
-                return Result.all();
-            }
-            selected.addAll(tests);
+            Path sourceRoot = containing(path, sourceRoots);
+            if (sourceRoot == null || !graph.isComplete()) return Result.all();
+            Set<String> affected = graph.testsForSource(sourceRoot.relativize(path));
+            if (affected.isEmpty()) return Result.all();
+            selected.addAll(affected);
         }
-
         return selected.isEmpty() ? Result.all() : Result.of(selected);
     }
 
-    /**
-     * Convert a .java file path to a fully-qualified class name.
-     * Works with both absolute paths and project-relative paths.
-     * e.g. src/main/java/org/testwatch/Foo.java -> org.testwatch.Foo
-     */
-    static String pathToFqn(Path path, Path sourceRoot) {
-        // Normalise to forward-slash relative path string
-        Path normalised = path.normalize();
-        Path rel;
-        try {
-            rel = sourceRoot.normalize().relativize(normalised);
-        } catch (IllegalArgumentException e) {
-            // path is not under sourceRoot — use the filename stem as a best-effort FQN
-            String name = normalised.getFileName().toString();
-            return name.endsWith(".java") ? name.substring(0, name.length() - 5) : name;
+    private static Path containing(Path path, List<Path> roots) {
+        Path best = null;
+        for (Path candidate : roots) {
+            Path root = candidate.toAbsolutePath().normalize();
+            if (path.startsWith(root) && (best == null || root.getNameCount() > best.getNameCount())) best = root;
         }
-        String s = rel.toString().replace('\\', '/');
-        if (s.endsWith(".java"))
-            s = s.substring(0, s.length() - 5);
-        return s.replace('/', '.');
+        return best;
+    }
+
+    static String pathToFqn(Path path, Path sourceRoot) {
+        Path file = path.toAbsolutePath().normalize();
+        Path root = sourceRoot.toAbsolutePath().normalize();
+        if (!file.startsWith(root)) throw new IllegalArgumentException("Source is outside its root: " + file);
+        String relative = root.relativize(file).toString().replace('\\', '/');
+        if (relative.endsWith(".java")) relative = relative.substring(0, relative.length() - 5);
+        return relative.replace('/', '.');
     }
 }

@@ -1,270 +1,266 @@
 package org.testwatch.plugin;
 
-import org.apache.maven.shared.invoker.*;
-
-import java.io.*;
-import java.nio.file.*;
-import java.util.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
-/**
- * Forks a Maven subprocess to run tests using maven-invoker.
- * Streams output to stdout with ANSI coloring.
- * Parses Surefire XML reports to track failed test FQNs.
- */
+import org.apache.maven.execution.MavenExecutionRequest;
+import org.apache.maven.execution.MavenSession;
+import org.apache.maven.project.MavenProject;
+import org.apache.maven.shared.invoker.DefaultInvocationRequest;
+import org.apache.maven.shared.invoker.InvocationRequest;
+import org.apache.maven.shared.invoker.MavenCommandLineBuilder;
+import org.testwatch.plugin.model.TestRunResult;
+import org.testwatch.plugin.model.TestRunResult.Status;
+
+/** Runs a cancellable Maven child with the originating session's configuration. */
 public class MavenTestRunner {
-
-    private static final Logger LOG = Logger.getLogger(MavenTestRunner.class.getName());
-
-    // ANSI codes
-    private static final String RESET = "\u001B[0m";
-    private static final String GREEN = "\u001B[32m";
-    private static final String RED = "\u001B[31m";
-    private static final String YELLOW = "\u001B[33m";
-    private static final String CYAN = "\u001B[36m";
-
     private final File basedir;
+    private final File pom;
     private final boolean parallel;
-    private final File mavenHome;
-    private Consumer<String> outputSink;
-
+    private final MavenSession session;
+    private final Set<Path> reportDirectories;
+    private final Object processLock = new Object();
+    private Consumer<String> outputSink = System.out::println;
+    private boolean summaryEnabled = true;
+    private boolean interactiveOutput;
     private volatile Process currentProcess;
-    private volatile Set<String> lastFailedFqns = Collections.emptySet();
+    private volatile boolean invoking;
+    private volatile boolean cancelled;
+    private volatile TestRunResult lastResult;
+    private volatile TestRunResult lastCompletedResult;
 
     public MavenTestRunner(File basedir, boolean parallel) {
         this.basedir = basedir;
+        this.pom = new File(basedir, "pom.xml");
         this.parallel = parallel;
-        this.outputSink = System.out::println; // default
-        this.mavenHome = detectMavenHome();
+        this.session = null;
+        this.reportDirectories = Set.of(basedir.toPath().resolve("target/surefire-reports"));
     }
 
-    /**
-     * Set the output sink for test output lines. Defaults to System.out::println.
-     */
-    public void setOutputSink(Consumer<String> outputSink) {
-        this.outputSink = outputSink;
+    MavenTestRunner(MavenProject project, MavenSession session, List<ProjectLayout> layouts, boolean parallel) {
+        this.session = session;
+        this.pom = session != null && session.getRequest().getPom() != null
+                ? session.getRequest().getPom() : project.getFile();
+        this.basedir = pom.getAbsoluteFile().getParentFile();
+        this.parallel = parallel;
+        this.reportDirectories = layouts.stream().flatMap(p -> p.reports.stream())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
-    /**
-     * Run the full test suite (no -Dtest= filter).
-     */
-    public int runAll() {
-        return invoke(Collections.emptySet());
-    }
-
-    /**
-     * Run a specific set of test FQNs. If fqns is empty, runs all tests.
-     */
-    public int run(Set<String> testFqns) {
-        return invoke(testFqns);
-    }
-
-    /** Returns the FQNs of tests that failed in the last run. */
+    public void setOutputSink(Consumer<String> sink) { outputSink = sink; }
+    public void setSummaryEnabled(boolean enabled) { summaryEnabled = enabled; }
+    public void setInteractiveOutput(boolean interactive) { interactiveOutput = interactive; }
+    public int runAll() { return invoke(Collections.emptySet()); }
+    public int run(Set<String> tests) { return invoke(tests); }
+    public TestRunResult getLastResult() { return lastResult; }
     public Set<String> getLastFailedFqns() {
-        return lastFailedFqns;
+        TestRunResult completed = lastCompletedResult;
+        return completed == null ? Set.of() : completed.getFailedTests();
     }
 
-    /** Kills the in-progress Maven subprocess if one is running. */
+    /** Returns the current invocation's counts, never historical reports. */
+    int[] parseSurefireSummary() { return lastResult == null ? null : lastResult.getSummary(); }
+
+    /** Stops this runner's child and its descendants, including forked test JVMs. */
     public void cancel() {
-        Process p = currentProcess;
-        if (p != null && p.isAlive()) {
-            p.destroyForcibly();
-            outputSink.accept(YELLOW + "[test-watch] Run cancelled." + RESET);
+        Process process;
+        synchronized (processLock) {
+            if (!invoking) return;
+            cancelled = true;
+            process = currentProcess;
         }
+        if (process != null) terminate(process);
     }
 
-    // ---- private ----
-
-    private int invoke(Set<String> testFqns) {
-        Invoker invoker = new DefaultInvoker();
-        if (mavenHome != null)
-            invoker.setMavenHome(mavenHome);
-
-        InvocationRequest request = new DefaultInvocationRequest();
-        request.setBaseDirectory(basedir);
-        request.setGoals(List.of("test"));
-        request.setBatchMode(true);
-
-        Properties props = new Properties();
-        props.setProperty("maven.test.failure.ignore", "true");
-        props.setProperty("surefire.failIfNoSpecifiedTests", "false");
-        if (!testFqns.isEmpty()) {
-            props.setProperty("test", String.join(",", testFqns));
-        }
-        if (parallel) {
-            props.setProperty("parallel", "methods");
-            props.setProperty("useUnlimitedThreads", "true");
-        }
-        request.setProperties(props);
-
-        // Capture process for cancel-and-restart
-        Consumer<String> sink = this.outputSink;
-        request.setOutputHandler(line -> {
-            String colored = colorize(line);
-            if (colored != null) {
-                sink.accept(colored);
-            }
-        });
-        request.setErrorHandler(line -> sink.accept(YELLOW + line + RESET));
-
-        outputSink.accept(CYAN + "[test-watch] Running: " +
-                (testFqns.isEmpty() ? "all tests" : String.join(", ", testFqns)) + RESET);
-
+    private static void terminate(Process process) {
+        List<ProcessHandle> children = process.descendants().collect(Collectors.toList());
+        Collections.reverse(children);
+        children.forEach(ProcessHandle::destroy);
+        process.destroy();
         try {
-            InvocationResult result = invoker.execute(request);
-            // After run, parse surefire XML for failures
-            lastFailedFqns = parseSurefireFailures();
-            printSummary();
-            return result.getExitCode();
-        } catch (MavenInvocationException e) {
-            outputSink.accept(RED + "[test-watch] Maven invocation failed: " + e.getMessage() + RESET);
-            return -1;
+            process.waitFor(300, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            children.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
+            if (process.isAlive()) process.destroyForcibly();
         }
     }
 
-    private String colorize(String line) {
-        // Suppress JaCoCo execution-data mismatch warnings (noise in watch mode)
-        if (line.contains("[WARNING]") && line.contains("Execution data for class")
-                && line.contains("does not match")) {
-            return null; // null signals "suppress this line"
+    InvocationRequest createRequest(Set<String> tests) {
+        InvocationRequest request = new DefaultInvocationRequest();
+        request.setBaseDirectory(basedir).setPomFile(pom).setGoals(List.of("test")).setBatchMode(true);
+        Properties properties = new Properties();
+        if (session != null) {
+            MavenExecutionRequest parent = session.getRequest();
+            properties.putAll(session.getUserProperties());
+            request.setOffline(parent.isOffline()).setUpdateSnapshots(parent.isUpdateSnapshots())
+                    .setRecursive(parent.isRecursive()).setShowErrors(parent.isShowErrors())
+                    .setUserSettingsFile(existing(parent.getUserSettingsFile())).setGlobalSettingsFile(existing(parent.getGlobalSettingsFile()))
+                    .setToolchainsFile(existing(parent.getUserToolchainsFile())).setGlobalToolchainsFile(existing(parent.getGlobalToolchainsFile()))
+                    .setLocalRepositoryDirectory(parent.getLocalRepositoryPath()).setResumeFrom(parent.getResumeFrom());
+            List<String> profiles = new ArrayList<>(parent.getActiveProfiles());
+            parent.getInactiveProfiles().forEach(p -> profiles.add("!" + p));
+            request.setProfiles(profiles);
+            List<String> projects = new ArrayList<>(parent.getSelectedProjects());
+            parent.getExcludedProjects().forEach(p -> projects.add("!" + p));
+            request.setProjects(projects);
+            String make = parent.getMakeBehavior();
+            request.setAlsoMake(MavenExecutionRequest.REACTOR_MAKE_UPSTREAM.equals(make)
+                    || MavenExecutionRequest.REACTOR_MAKE_BOTH.equals(make));
+            request.setAlsoMakeDependents(MavenExecutionRequest.REACTOR_MAKE_DOWNSTREAM.equals(make)
+                    || MavenExecutionRequest.REACTOR_MAKE_BOTH.equals(make));
+            if (parent.getDegreeOfConcurrency() > 1) request.setThreads(String.valueOf(parent.getDegreeOfConcurrency()));
+            if (parent.isNoSnapshotUpdates()) request.addArg("-nsu");
+            if (MavenExecutionRequest.CHECKSUM_POLICY_FAIL.equals(parent.getGlobalChecksumPolicy())) request.addArg("-C");
+            if (MavenExecutionRequest.CHECKSUM_POLICY_WARN.equals(parent.getGlobalChecksumPolicy())) request.addArg("-c");
+            if (MavenExecutionRequest.REACTOR_FAIL_AT_END.equals(parent.getReactorFailureBehavior())) request.addArg("-fae");
+            if (MavenExecutionRequest.REACTOR_FAIL_NEVER.equals(parent.getReactorFailureBehavior())) request.addArg("-fn");
         }
-        if (line.contains("BUILD SUCCESS"))
-            return GREEN + line + RESET;
-        if (line.contains("BUILD FAILURE"))
-            return RED + line + RESET;
-        if (line.contains("COMPILATION ERROR") || line.contains("[ERROR]"))
-            return YELLOW + line + RESET;
-        if (line.contains("Tests run:") && line.contains("Failures: 0") && line.contains("Errors: 0"))
-            return GREEN + line + RESET;
-        if (line.contains("Tests run:") &&
-                (line.contains("Failures:") || line.contains("Errors:")) &&
-                !line.contains("Failures: 0, Errors: 0"))
-            return RED + line + RESET;
-        return line;
+        // The child writes to pipes, so Maven cannot detect the outer terminal itself.
+        // Translate automatic color detection while preserving an explicit color preference.
+        String defaultColor = session == null ? System.getProperty("style.color", "auto")
+                : session.getSystemProperties().getProperty("style.color", "auto");
+        String color = properties.getProperty("style.color", defaultColor);
+        properties.setProperty("style.color", interactiveOutput && "auto".equals(color) ? "always" : color);
+        properties.putIfAbsent("maven.test.failure.ignore", "true");
+        // Other reactor modules may legitimately contain none of the selected classes.
+        properties.setProperty("surefire.failIfNoSpecifiedTests", "false");
+        if (!tests.isEmpty()) properties.setProperty("test", String.join(",", tests));
+        if (parallel) {
+            properties.putIfAbsent("parallel", "methods");
+            properties.putIfAbsent("useUnlimitedThreads", "true");
+            properties.putIfAbsent("junit.jupiter.execution.parallel.enabled", "true");
+            properties.putIfAbsent("junit.jupiter.execution.parallel.mode.default", "concurrent");
+            properties.putIfAbsent("junit.jupiter.execution.parallel.mode.classes.default", "same_thread");
+        }
+        request.setProperties(properties);
+        File mavenHome = detectMavenHome();
+        if (mavenHome != null) request.setMavenHome(mavenHome);
+        return request;
     }
 
-    private Set<String> parseSurefireFailures() {
-        Path reportsDir = basedir.toPath().resolve("target/surefire-reports");
-        if (!Files.exists(reportsDir))
-            return Collections.emptySet();
+    private static File existing(File file) {
+        // Maven includes optional default paths in its request even when no file exists.
+        return file != null && file.isFile() ? file : null;
+    }
 
-        Set<String> failed = new LinkedHashSet<>();
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(reportsDir, "TEST-*.xml")) {
-            for (Path xml : stream) {
-                String content = Files.readString(xml);
-                // Simple string scan — good enough; full XML parse is over-engineering here
-                if (content.contains("<failure") || content.contains("<error")) {
-                    // Extract classname from <testsuite name="org.testwatch.FooTest" ...>
-                    int nameIdx = content.indexOf("classname=\"");
-                    if (nameIdx < 0)
-                        nameIdx = content.indexOf("name=\"");
-                    if (nameIdx >= 0) {
-                        int start = content.indexOf('"', nameIdx) + 1;
-                        int end = content.indexOf('"', start);
-                        if (end > start)
-                            failed.add(content.substring(start, end));
-                    }
+    private int invoke(Set<String> tests) {
+        synchronized (processLock) {
+            if (invoking) throw new IllegalStateException("A Maven invocation is already running");
+            invoking = true;
+            cancelled = false;
+        }
+        Process process = null;
+        TestRunResult result;
+        try {
+            Map<Path, SurefireReports.Stamp> before = SurefireReports.snapshot(reportDirectories);
+            var command = new MavenCommandLineBuilder().build(createRequest(tests));
+            outputSink.accept("[test-watch] Running: " + (tests.isEmpty() ? "all tests" : String.join(", ", tests)));
+            synchronized (processLock) {
+                if (!cancelled) {
+                    process = command.execute();
+                    currentProcess = process;
                 }
             }
-        } catch (IOException e) {
-            LOG.warning("Could not parse surefire reports: " + e.getMessage());
-        }
-        return failed;
-    }
-
-    /**
-     * Parses all Surefire XML reports and returns [total, failures, errors,
-     * skipped].
-     * Returns null if no reports are found.
-     */
-    int[] parseSurefireSummary() {
-        Path reportsDir = basedir.toPath().resolve("target/surefire-reports");
-        if (!Files.exists(reportsDir))
-            return null;
-
-        int total = 0, failures = 0, errors = 0, skipped = 0;
-        boolean found = false;
-
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(reportsDir, "TEST-*.xml")) {
-            for (Path xml : stream) {
-                found = true;
-                String content = Files.readString(xml);
-                // Extract attributes from <testsuite tests="N" failures="N" errors="N"
-                // skipped="N">
-                total += extractIntAttr(content, "tests");
-                failures += extractIntAttr(content, "failures");
-                errors += extractIntAttr(content, "errors");
-                skipped += extractIntAttr(content, "skipped");
+            if (process == null) {
+                result = cancelledResult();
+            } else {
+                process.getOutputStream().close();
+                Thread stdout = stream(process.getInputStream(), "maven-output");
+                Thread stderr = stream(process.getErrorStream(), "maven-errors");
+                int exit = process.waitFor();
+                stdout.join(2000);
+                stderr.join(2000);
+                if (cancelled) {
+                    result = cancelledResult();
+                } else {
+                    SurefireReports.Results reports = SurefireReports.readFresh(reportDirectories, before);
+                    int[] counts = reports.found ? reports.counts : null;
+                    Status status = exit != 0 ? Status.BUILD_ERROR
+                            : !reports.found || reports.counts[0] == 0 ? Status.NO_TESTS
+                            : reports.counts[1] + reports.counts[2] > 0 ? Status.FAILED : Status.PASSED;
+                    String message = exit != 0 ? "Maven exited with code " + exit : null;
+                    if (status == Status.NO_TESTS) {
+                        message = tests.isEmpty() ? "No tests executed in this run." : "No tests matched the selection.";
+                    }
+                    result = new TestRunResult(status, exit, counts, reports.failed, message);
+                }
             }
-        } catch (IOException e) {
-            LOG.warning("Could not parse surefire reports for summary: " + e.getMessage());
-            return null;
+        } catch (InterruptedException e) {
+            cancel();
+            Thread.currentThread().interrupt();
+            result = cancelledResult();
+        } catch (Exception e) {
+            result = cancelled ? cancelledResult()
+                    : new TestRunResult(Status.BUILD_ERROR, -1, null, Set.of(), e.getMessage());
+        } finally {
+            if (process != null) {
+                if (process.isAlive()) terminate(process);
+                try { process.getInputStream().close(); } catch (Exception ignored) { }
+                try { process.getErrorStream().close(); } catch (Exception ignored) { }
+            }
+            synchronized (processLock) {
+                currentProcess = null;
+                invoking = false;
+            }
         }
-
-        return found ? new int[] { total, failures, errors, skipped } : null;
+        lastResult = result;
+        if (result.getStatus() != Status.CANCELLED) lastCompletedResult = result;
+        if (summaryEnabled) outputSink.accept(result.formatSummary());
+        return result.getExitCode();
     }
 
-    private int extractIntAttr(String xml, String attrName) {
-        String search = attrName + "=\"";
-        int idx = xml.indexOf(search);
-        if (idx < 0)
-            return 0;
-        int start = idx + search.length();
-        int end = xml.indexOf('"', start);
-        if (end < 0)
-            return 0;
-        try {
-            return Integer.parseInt(xml.substring(start, end).trim());
-        } catch (NumberFormatException e) {
-            return 0;
-        }
+    private TestRunResult cancelledResult() {
+        return new TestRunResult(Status.CANCELLED, -1, null, Set.of(), "Run stopped.");
     }
 
-    private void printSummary() {
-        int[] summary = parseSurefireSummary();
-        if (summary == null)
-            return;
-
-        int total = summary[0], failures = summary[1], errors = summary[2], skipped = summary[3];
-        int passed = total - failures - errors - skipped;
-        boolean hasFail = (failures + errors) > 0;
-
-        StringBuilder sb = new StringBuilder();
-        if (hasFail) {
-            sb.append(RED).append(" FAIL ").append(RESET);
-        } else {
-            sb.append(GREEN).append(" PASS ").append(RESET);
-        }
-        sb.append(" Tests: ");
-        if (hasFail) {
-            sb.append(RED).append(failures + errors).append(" failed").append(RESET).append(", ");
-        }
-        if (skipped > 0) {
-            sb.append(YELLOW).append(skipped).append(" skipped").append(RESET).append(", ");
-        }
-        sb.append(GREEN).append(passed).append(" passed").append(RESET);
-
-        outputSink.accept(sb.toString());
+    private Thread stream(InputStream input, String name) {
+        Thread thread = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, Charset.defaultCharset()))) {
+                String line;
+                while ((line = reader.readLine()) != null) outputSink.accept(line);
+            } catch (Exception e) {
+                if (!cancelled) outputSink.accept("[test-watch] Output stream closed: " + e.getMessage());
+            }
+        }, name);
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
     }
 
     private static File detectMavenHome() {
-        String m2home = System.getenv("M2_HOME");
-        if (m2home != null && !m2home.isBlank())
-            return new File(m2home);
-        String mavenHome = System.getenv("MAVEN_HOME");
-        if (mavenHome != null && !mavenHome.isBlank())
-            return new File(mavenHome);
-        // Try to find mvn on PATH
-        try {
-            ProcessBuilder pb = new ProcessBuilder("which", "mvn");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            String line = new BufferedReader(new InputStreamReader(p.getInputStream())).readLine();
-            if (line != null && !line.isBlank()) {
-                return new File(line).getParentFile().getParentFile(); // bin/mvn -> ..
+        String current = System.getProperty("maven.home");
+        if (current != null && !current.isBlank()) return new File(current);
+        for (String variable : List.of("MAVEN_HOME", "M2_HOME")) {
+            String value = System.getenv(variable);
+            if (value != null && !value.isBlank()) return new File(value);
+        }
+        String searchPath = System.getenv("PATH");
+        if (searchPath != null) {
+            String executable = System.getProperty("os.name").startsWith("Windows") ? "mvn.cmd" : "mvn";
+            for (String directory : searchPath.split(java.util.regex.Pattern.quote(File.pathSeparator))) {
+                Path candidate = Path.of(directory).resolve(executable);
+                if (Files.isExecutable(candidate)) {
+                    try { return candidate.toRealPath().getParent().getParent().toFile(); }
+                    catch (Exception ignored) { }
+                }
             }
-        } catch (IOException ignored) {
         }
         return null;
     }

@@ -1,254 +1,263 @@
 package org.testwatch.plugin;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.FileSystems;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.PathMatcher;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
-
+import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.ConstantDynamic;
 import org.objectweb.asm.FieldVisitor;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 
-/**
- * Builds a bidirectional dependency map between test classes and source classes
- * by parsing compiled .class files with ASM.
- *
- * <p>
- * Walks target/test-classes for test classes (identified by testPattern globs
- * applied to the simple class name), then for each test class uses ASM to
- * collect
- * all referenced class FQNs that also appear in target/classes.
- * </p>
- */
+/** Conservative, transitive dependencies across production classes and test helpers. */
 public class DependencyGraph {
-
     private static final Logger LOG = Logger.getLogger(DependencyGraph.class.getName());
-
-    /** test FQN → set of source FQNs it references */
     private final Map<String, Set<String>> testToSources;
-    /** source FQN → set of test FQNs that reference it */
     private final Map<String, Set<String>> sourceToTests;
+    private final Map<String, Set<String>> sourceFiles;
+    private final Set<String> constants;
+    private final boolean complete;
 
-    private DependencyGraph(Map<String, Set<String>> testToSources,
-            Map<String, Set<String>> sourceToTests) {
-        this.testToSources = Collections.unmodifiableMap(testToSources);
-        this.sourceToTests = Collections.unmodifiableMap(sourceToTests);
+    private DependencyGraph(Map<String, Set<String>> tests, Map<String, Set<String>> sources,
+            Map<String, Set<String>> sourceFiles, Set<String> constants, boolean complete) {
+        this.testToSources = freeze(tests);
+        this.sourceToTests = freeze(sources);
+        this.sourceFiles = freeze(sourceFiles);
+        this.constants = Set.copyOf(constants);
+        this.complete = complete;
     }
 
-    public Map<String, Set<String>> getTestToSources() {
-        return testToSources;
+    private static Map<String, Set<String>> freeze(Map<String, Set<String>> values) {
+        Map<String, Set<String>> copy = new LinkedHashMap<>();
+        values.forEach((key, value) -> copy.put(key, Collections.unmodifiableSet(new LinkedHashSet<>(value))));
+        return Collections.unmodifiableMap(copy);
     }
 
-    public Map<String, Set<String>> getSourceToTests() {
-        return sourceToTests;
-    }
+    public Map<String, Set<String>> getTestToSources() { return testToSources; }
+    public Map<String, Set<String>> getSourceToTests() { return sourceToTests; }
+    public boolean isComplete() { return complete; }
 
-    /**
-     * Build a DependencyGraph by scanning the given class output directories.
-     *
-     * @param classesDir     path to target/classes (source classes)
-     * @param testClassesDir path to target/test-classes (test + source classes
-     *                       compiled from src/test)
-     * @param testPatterns   comma-split list of glob patterns identifying test
-     *                       class simple names
-     *                       e.g. ["**&#47;*Test.java", "**&#47;*Tests.java"]
-     */
-    public static DependencyGraph build(Path classesDir, Path testClassesDir,
-            List<String> testPatterns) throws IOException {
-        // 1. Collect all source FQNs from target/classes
-        Set<String> sourceFqns = collectFqns(classesDir);
-
-        // 2. Collect all test FQNs from target/test-classes, filtered by testPatterns
-        Set<String> testFqns = collectTestFqns(testClassesDir, testPatterns);
-
-        // 3. For each test class, use ASM to find which source FQNs it references
-        Map<String, Set<String>> testToSources = new LinkedHashMap<>();
-        for (String testFqn : testFqns) {
-            Path classFile = testClassesDir.resolve(toClassPath(testFqn));
-            if (!Files.exists(classFile))
-                continue;
-            Set<String> refs = collectReferences(classFile, sourceFqns);
-            if (!refs.isEmpty()) {
-                testToSources.put(testFqn, refs);
-            }
+    Set<String> testsForSource(Path relativeJavaPath) {
+        String file = relativeJavaPath.toString().replace('\\', '/');
+        Set<String> classes = sourceFiles.get(file);
+        if (classes == null) {
+            String fqn = file.replace('/', '.').replaceFirst("\\.java$", "");
+            classes = Set.of(fqn);
         }
-
-        // 4. Build reverse map
-        Map<String, Set<String>> sourceToTests = new LinkedHashMap<>();
-        for (Map.Entry<String, Set<String>> entry : testToSources.entrySet()) {
-            for (String src : entry.getValue()) {
-                sourceToTests.computeIfAbsent(src, k -> new LinkedHashSet<>()).add(entry.getKey());
-            }
+        Set<String> tests = new LinkedHashSet<>();
+        for (String source : classes) {
+            // The compiler erases dependencies on compile-time constants.
+            if (constants.contains(source)) return Set.of();
+            tests.addAll(sourceToTests.getOrDefault(source, Set.of()));
         }
-
-        return new DependencyGraph(testToSources, sourceToTests);
+        return tests;
     }
 
-    /** Returns an empty graph (used when target/ dirs do not exist yet). */
     public static DependencyGraph empty() {
-        return new DependencyGraph(Collections.emptyMap(), Collections.emptyMap());
+        return new DependencyGraph(Map.of(), Map.of(), Map.of(), Set.of(), false);
     }
 
-    /** Package-private factory for tests. */
-    static DependencyGraph ofMaps(Map<String, Set<String>> testToSources,
-            Map<String, Set<String>> sourceToTests) {
-        return new DependencyGraph(testToSources, sourceToTests);
+    static DependencyGraph ofMaps(Map<String, Set<String>> tests, Map<String, Set<String>> sources) {
+        return new DependencyGraph(tests, sources, Map.of(), Set.of(), true);
     }
 
-    // ---- helpers ----
+    public static DependencyGraph build(Path classes, Path testClasses, List<String> patterns) throws IOException {
+        return buildDirectories(List.of(classes), List.of(testClasses), patterns);
+    }
 
-    private static Set<String> collectFqns(Path dir) throws IOException {
-        Set<String> fqns = new LinkedHashSet<>();
-        if (!Files.exists(dir))
-            return fqns;
-        Files.walkFileTree(dir, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                if (file.toString().endsWith(".class")) {
-                    fqns.add(toFqn(dir, file));
-                }
-                return FileVisitResult.CONTINUE;
+    static DependencyGraph build(List<ProjectLayout> layouts, List<String> patterns) throws IOException {
+        List<Path> classes = new ArrayList<>(), tests = new ArrayList<>();
+        for (ProjectLayout layout : layouts) {
+            classes.add(layout.classes);
+            tests.add(layout.testClasses);
+        }
+        return buildDirectories(classes, tests, patterns);
+    }
+
+    private static DependencyGraph buildDirectories(List<Path> mainDirs, List<Path> testDirs,
+            List<String> patterns) throws IOException {
+        Map<String, ClassInfo> classes = new LinkedHashMap<>();
+        Set<String> sources = new LinkedHashSet<>(), tests = new LinkedHashSet<>();
+        boolean complete = true;
+        PathPatterns matchers = new PathPatterns(patterns);
+        for (Path directory : mainDirs) complete &= scan(directory, classes, sources, null, matchers);
+        for (Path directory : testDirs) complete &= scan(directory, classes, null, tests, matchers);
+
+        // A reference to a base class or interface can dispatch to any project implementation.
+        for (ClassInfo info : classes.values()) {
+            for (String parent : info.parents) {
+                ClassInfo base = classes.get(parent);
+                if (base != null) base.references.add(info.name);
             }
-        });
-        return fqns;
-    }
-
-    private static Set<String> collectTestFqns(Path dir, List<String> patterns) throws IOException {
-        Set<String> fqns = new LinkedHashSet<>();
-        if (!Files.exists(dir))
-            return fqns;
-        List<PathMatcher> matchers = patterns.stream()
-                .map(p -> FileSystems.getDefault().getPathMatcher("glob:" + p))
-                .collect(Collectors.toList());
-        Files.walkFileTree(dir, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                if (!file.toString().endsWith(".class"))
-                    return FileVisitResult.CONTINUE;
-                // Build a relative path with .java extension for glob matching
-                // e.g. org/testwatch/FooTest.class -> org/testwatch/FooTest.java
-                String relJava = dir.relativize(file).toString()
-                        .replace('\\', '/')
-                        .replace(".class", ".java");
-                Path relPath = Path.of(relJava);
-                // Also check simple filename alone for patterns like *Test.java
-                Path simplePath = Path.of(file.getFileName().toString().replace(".class", ".java"));
-                boolean isTest = matchers.stream().anyMatch(m -> m.matches(relPath) || m.matches(simplePath));
-                if (isTest) {
-                    fqns.add(toFqn(dir, file));
-                }
-                return FileVisitResult.CONTINUE;
+        }
+        Map<String, Set<String>> testToSources = new LinkedHashMap<>();
+        Map<String, Set<String>> sourceToTests = new LinkedHashMap<>();
+        for (String test : tests) {
+            Set<String> reached = new LinkedHashSet<>();
+            Deque<String> pending = new ArrayDeque<>();
+            pending.add(test);
+            classes.keySet().stream().filter(n -> n.startsWith(test + "$")) .forEach(pending::add);
+            boolean dynamic = false;
+            while (!pending.isEmpty()) {
+                String name = pending.removeFirst();
+                if (!reached.add(name)) continue;
+                ClassInfo info = classes.get(name);
+                if (info == null) continue;
+                dynamic |= info.dynamic;
+                pending.addAll(info.references);
             }
-        });
-        return fqns;
+            reached.retainAll(sources);
+            testToSources.put(test, reached);
+            // Reflection/framework discovery and unlinked tests cannot establish a safe subset.
+            if (dynamic || reached.isEmpty()) complete = false;
+            for (String source : reached) {
+                sourceToTests.computeIfAbsent(source, key -> new LinkedHashSet<>()).add(test);
+            }
+        }
+        Map<String, Set<String>> sourceFiles = new LinkedHashMap<>();
+        Set<String> constants = new LinkedHashSet<>();
+        for (String source : sources) {
+            ClassInfo info = classes.get(source);
+            if (info == null) continue;
+            if (info.constant) constants.add(source);
+            if (info.sourceFile != null) {
+                int dot = source.lastIndexOf('.');
+                String file = (dot < 0 ? "" : source.substring(0, dot).replace('.', '/') + "/") + info.sourceFile;
+                sourceFiles.computeIfAbsent(file, key -> new LinkedHashSet<>()).add(source);
+            }
+        }
+        return new DependencyGraph(testToSources, sourceToTests, sourceFiles, constants, complete && !tests.isEmpty());
     }
 
-    private static Set<String> collectReferences(Path classFile, Set<String> knownSources) {
-        Set<String> refs = new LinkedHashSet<>();
-        try (InputStream in = Files.newInputStream(classFile)) {
-            ClassReader reader = new ClassReader(in);
-            reader.accept(new ClassVisitor(Opcodes.ASM9) {
-                @Override
-                public void visit(int version, int access, String name, String signature,
-                        String superName, String[] interfaces) {
-                    addIfKnown(name, knownSources, refs);
-                    addIfKnown(superName, knownSources, refs);
-                    if (interfaces != null) {
-                        for (String iface : interfaces)
-                            addIfKnown(iface, knownSources, refs);
+    private static boolean scan(Path directory, Map<String, ClassInfo> classes, Set<String> sources,
+            Set<String> tests, PathPatterns patterns) throws IOException {
+        if (!Files.isDirectory(directory)) return true;
+        boolean complete = true;
+        try (var files = Files.walk(directory)) {
+            for (Path file : (Iterable<Path>) files.filter(p -> p.toString().endsWith(".class"))::iterator) {
+                try {
+                    ClassInfo info = read(file);
+                    if (classes.putIfAbsent(info.name, info) != null) complete = false;
+                    if (sources != null) sources.add(info.name);
+                    if (tests != null && info.name.indexOf('$') < 0) {
+                        Path javaPath = Path.of(directory.relativize(file).toString().replaceAll("\\.class$", ".java"));
+                        if (patterns.matches(javaPath)) tests.add(info.name);
                     }
+                } catch (IOException | RuntimeException e) {
+                    complete = false;
+                    LOG.warning("Cannot analyze " + file + "; source changes will run all tests: " + e.getMessage());
                 }
-
-                @Override
-                public FieldVisitor visitField(int access, String name, String descriptor,
-                        String signature, Object value) {
-                    collectFromDescriptor(descriptor, knownSources, refs);
-                    return null;
-                }
-
-                @Override
-                public MethodVisitor visitMethod(int access, String name, String descriptor,
-                        String signature, String[] exceptions) {
-                    collectFromDescriptor(descriptor, knownSources, refs);
-                    return new MethodVisitor(Opcodes.ASM9) {
-                        @Override
-                        public void visitTypeInsn(int opcode, String type) {
-                            addIfKnown(type, knownSources, refs);
-                        }
-
-                        @Override
-                        public void visitFieldInsn(int opcode, String owner, String name2, String desc) {
-                            addIfKnown(owner, knownSources, refs);
-                            collectFromDescriptor(desc, knownSources, refs);
-                        }
-
-                        @Override
-                        public void visitMethodInsn(int opcode, String owner, String name2,
-                                String desc, boolean itf) {
-                            addIfKnown(owner, knownSources, refs);
-                            collectFromDescriptor(desc, knownSources, refs);
-                        }
-                    };
-                }
-            }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-        } catch (IOException e) {
-            LOG.warning("ASM: skipping unreadable class file: " + classFile + " — " + e.getMessage());
-        }
-        return refs;
-    }
-
-    private static void addIfKnown(String internalName, Set<String> known, Set<String> out) {
-        if (internalName == null)
-            return;
-        String fqn = internalName.replace('/', '.');
-        if (known.contains(fqn))
-            out.add(fqn);
-    }
-
-    private static void collectFromDescriptor(String descriptor, Set<String> known, Set<String> out) {
-        if (descriptor == null)
-            return;
-        // Extract class names from JVM type descriptors, e.g. "Lorg/testwatch/Foo;" ->
-        // "org.testwatch.Foo"
-        int i = 0;
-        while (i < descriptor.length()) {
-            if (descriptor.charAt(i) == 'L') {
-                int end = descriptor.indexOf(';', i);
-                if (end < 0)
-                    break;
-                addIfKnown(descriptor.substring(i + 1, end), known, out);
-                i = end + 1;
-            } else {
-                i++;
             }
         }
+        return complete;
     }
 
-    private static String toFqn(Path base, Path classFile) {
-        String rel = base.relativize(classFile).toString()
-                .replace(FileSystems.getDefault().getSeparator(), ".")
-                .replace("/", ".");
-        if (rel.endsWith(".class"))
-            rel = rel.substring(0, rel.length() - 6);
-        return rel;
+    private static final class ClassInfo {
+        String name;
+        String sourceFile;
+        boolean dynamic;
+        boolean constant;
+        final Set<String> references = new LinkedHashSet<>();
+        final Set<String> parents = new LinkedHashSet<>();
+        void name(String name) {
+            if (name == null) return;
+            if (name.startsWith("[")) descriptor(name);
+            else references.add(name.replace('/', '.'));
+        }
+        void descriptor(String descriptor) {
+            if (descriptor == null) return;
+            for (int i = 0; i < descriptor.length(); i++) {
+                if (descriptor.charAt(i) == 'L') {
+                    int end = descriptor.indexOf(';', i);
+                    if (end < 0) break;
+                    name(descriptor.substring(i + 1, end));
+                    i = end;
+                }
+            }
+        }
+        void constant(Object value) {
+            if (value instanceof Type) descriptor(((Type) value).getDescriptor());
+            else if (value instanceof Handle) {
+                Handle handle = (Handle) value;
+                name(handle.getOwner());
+                descriptor(handle.getDesc());
+            } else if (value instanceof ConstantDynamic) {
+                ConstantDynamic dynamic = (ConstantDynamic) value;
+                descriptor(dynamic.getDescriptor());
+                constant(dynamic.getBootstrapMethod());
+                for (int i = 0; i < dynamic.getBootstrapMethodArgumentCount(); i++) constant(dynamic.getBootstrapMethodArgument(i));
+            }
+        }
+        AnnotationVisitor annotation(String descriptor) {
+            descriptor(descriptor);
+            if (!descriptor.startsWith("Lorg/junit/") && !descriptor.startsWith("Ljava/lang/")) dynamic = true;
+            return new AnnotationVisitor(Opcodes.ASM9) {
+                @Override public void visit(String name, Object value) { constant(value); }
+                @Override public void visitEnum(String name, String descriptor, String value) { descriptor(descriptor); }
+                @Override public AnnotationVisitor visitAnnotation(String name, String descriptor) { return annotation(descriptor); }
+                @Override public AnnotationVisitor visitArray(String name) { return this; }
+            };
+        }
     }
 
-    private static String toClassPath(String fqn) {
-        return fqn.replace('.', '/') + ".class";
+    private static ClassInfo read(Path file) throws IOException {
+        ClassInfo info = new ClassInfo();
+        new ClassReader(Files.readAllBytes(file)).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override public void visit(int version, int access, String name, String signature, String parent, String[] interfaces) {
+                info.name = name.replace('/', '.');
+                if (parent != null) info.parents.add(parent.replace('/', '.'));
+                if (interfaces != null) for (String iface : interfaces) info.parents.add(iface.replace('/', '.'));
+                info.references.addAll(info.parents);
+            }
+            @Override public void visitSource(String source, String debug) { info.sourceFile = source; }
+            @Override public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) { return info.annotation(descriptor); }
+            @Override public FieldVisitor visitField(int access, String name, String descriptor, String signature, Object value) {
+                info.descriptor(descriptor);
+                if (value != null && (access & Opcodes.ACC_STATIC) != 0 && (access & Opcodes.ACC_FINAL) != 0) info.constant = true;
+                return new FieldVisitor(Opcodes.ASM9) {
+                    @Override public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) { return info.annotation(descriptor); }
+                };
+            }
+            @Override public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                info.descriptor(descriptor);
+                if (exceptions != null) for (String exception : exceptions) info.name(exception);
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) { return info.annotation(descriptor); }
+                    @Override public AnnotationVisitor visitParameterAnnotation(int parameter, String descriptor, boolean visible) { return info.annotation(descriptor); }
+                    @Override public void visitTypeInsn(int opcode, String type) { info.name(type); }
+                    @Override public void visitFieldInsn(int opcode, String owner, String name, String descriptor) { info.name(owner); info.descriptor(descriptor); }
+                    @Override public void visitMethodInsn(int opcode, String owner, String name, String descriptor, boolean itf) {
+                        info.name(owner);
+                        info.descriptor(descriptor);
+                        if (owner.startsWith("java/lang/reflect/") || owner.equals("java/lang/Class")
+                                || owner.equals("java/util/ServiceLoader")) info.dynamic = true;
+                    }
+                    @Override public void visitLdcInsn(Object value) { info.constant(value); }
+                    @Override public void visitInvokeDynamicInsn(String name, String descriptor, Handle bootstrap, Object... arguments) {
+                        info.descriptor(descriptor);
+                        info.constant(bootstrap);
+                        for (Object argument : arguments) info.constant(argument);
+                    }
+                    @Override public void visitTryCatchBlock(org.objectweb.asm.Label start, org.objectweb.asm.Label end,
+                            org.objectweb.asm.Label handler, String type) { info.name(type); }
+                    @Override public void visitMultiANewArrayInsn(String descriptor, int dimensions) { info.descriptor(descriptor); }
+                };
+            }
+        }, ClassReader.SKIP_FRAMES);
+        return info;
     }
 }

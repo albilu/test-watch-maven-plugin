@@ -1,22 +1,15 @@
-import java.nio.file.*
+import javax.xml.parsers.DocumentBuilderFactory
 
-// After test-watch:test exits (via CI timeout) in module-a, verify that:
-// 1. Surefire reports exist in module-a (suite ran on startup)
-// 2. AlphaTest ran and passed in module-a
-
-Path reportsDir = basedir.toPath().resolve("module-a/target/surefire-reports")
-assert Files.exists(reportsDir) : "module-a surefire-reports directory missing"
-
-List<Path> xmlFiles = Files.list(reportsDir)
-    .filter { it.toString().endsWith(".xml") && it.fileName.toString().startsWith("TEST-") }
-    .collect()
-
-assert xmlFiles.size() >= 1 : "Expected at least 1 TEST-*.xml in module-a, found: ${xmlFiles.size()}"
-
-xmlFiles.each { xml ->
-    String content = xml.text
-    assert !content.contains('<failure') : "Unexpected test failure in ${xml.fileName}"
-    assert !content.contains('<error')   : "Unexpected test error in ${xml.fileName}"
+// One aggregator invocation must run and summarize both selected modules.
+def factory = DocumentBuilderFactory.newInstance()
+factory.setFeature('http://apache.org/xml/features/disallow-doctype-decl', true)
+['module-a': 'org.testwatch.a.AlphaTest', 'module-b': 'org.testwatch.b.BetaTest'].each { module, name ->
+    File report = new File(basedir, "${module}/target/surefire-reports/TEST-${name}.xml")
+    assert report.isFile() : "Missing report for ${module}"
+    def suite = factory.newDocumentBuilder().parse(report).documentElement
+    assert suite.getAttribute('tests').toInteger() == 1
+    assert suite.getAttribute('failures').toInteger() == 0
+    assert suite.getAttribute('errors').toInteger() == 0
 }
-
-println "IT verify passed: AlphaTest ran and passed in module-a."
+assert new File(basedir, 'build.log').text.contains('PASS  Tests: 2 passed')
+println 'IT verify passed: both modules executed and their results were aggregated.'

@@ -23,6 +23,11 @@ public class TriggerQueue {
 
     /** Listener notified whenever the trigger list changes. */
     private volatile Runnable onChange;
+    private volatile Runnable onEnqueue;
+
+    public void setOnEnqueue(Runnable onEnqueue) {
+        this.onEnqueue = onEnqueue;
+    }
 
     public void setOnChange(Runnable onChange) {
         this.onChange = onChange;
@@ -34,6 +39,9 @@ public class TriggerQueue {
     public void enqueue(FileChangeEvent event) {
         TriggerInfo trigger = new TriggerInfo(idCounter.getAndIncrement(), event);
         allTriggers.add(trigger);
+        Runnable listener = onEnqueue;
+        if (listener != null)
+            listener.run();
         queue.offer(trigger);
         fireChange();
     }
@@ -52,7 +60,11 @@ public class TriggerQueue {
      * Mark a trigger as done and remove it from the visible list.
      */
     public void markDone(int triggerId) {
-        allTriggers.removeIf(t -> t.getId() == triggerId);
+        allTriggers.removeIf(t -> {
+            if (t.getId() != triggerId) return false;
+            t.setStatus(TriggerStatus.DONE);
+            return true;
+        });
         fireChange();
     }
 

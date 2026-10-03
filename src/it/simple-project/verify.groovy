@@ -1,22 +1,19 @@
-import java.nio.file.*
+import javax.xml.parsers.DocumentBuilderFactory
 
-// After test-watch:test exits (via CI timeout), verify that:
-// 1. Surefire reports exist (full suite ran on startup)
-// 2. Both FooTest and BarTest ran and passed
-
-Path reportsDir = basedir.toPath().resolve("target/surefire-reports")
-assert Files.exists(reportsDir) : "surefire-reports directory missing"
-
-List<Path> xmlFiles = Files.list(reportsDir)
-    .filter { it.toString().endsWith(".xml") && it.fileName.toString().startsWith("TEST-") }
-    .collect()
-
-assert xmlFiles.size() >= 2 : "Expected at least 2 TEST-*.xml files, found: ${xmlFiles.size()}"
-
-xmlFiles.each { xml ->
-    String content = xml.text
-    assert !content.contains('<failure') : "Unexpected test failure in ${xml.fileName}"
-    assert !content.contains('<error')   : "Unexpected test error in ${xml.fileName}"
+// Parallel Surefire runs can group cases from different classes into one report.
+def factory = DocumentBuilderFactory.newInstance()
+factory.setFeature('http://apache.org/xml/features/disallow-doctype-decl', true)
+def names = []
+int total = 0
+new File(basedir, 'target/surefire-reports').eachFileMatch(~/TEST-.*\.xml/) { report ->
+    def suite = factory.newDocumentBuilder().parse(report).documentElement
+    total += suite.getAttribute('tests').toInteger()
+    assert suite.getAttribute('failures').toInteger() == 0
+    assert suite.getAttribute('errors').toInteger() == 0
+    def cases = suite.getElementsByTagName('testcase')
+    for (int i = 0; i < cases.length; i++) names.add(cases.item(i).getAttribute('classname'))
 }
-
-println "IT verify passed: both FooTest and BarTest ran and passed."
+assert total == 2
+assert names.sort() == ['org.testwatch.BarTest', 'org.testwatch.FooTest']
+assert new File(basedir, 'build.log').text.contains('PASS  Tests: 2 passed')
+println 'IT verify passed: both tests executed and the latest-run summary is correct.'
